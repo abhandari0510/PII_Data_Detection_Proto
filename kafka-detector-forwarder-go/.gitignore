@@ -1,0 +1,4 @@
+.gocache/
+.gomodcache/
+logs/
+kafka-detector-forwarder-go

@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Credit Application</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 0; padding: 0; background: #f5f7fa; }
+        .app-shell { max-width: 520px; margin: 40px auto; padding: 24px; background: white; border-radius: 12px; box-shadow: 0 18px 40px rgba(0,0,0,.08); }
+        h1 { margin-top: 0; }
+        label { display: block; margin: 16px 0 6px; font-weight: 600; }
+        input { width: 100%; padding: 10px 12px; border: 1px solid #d1d5db; border-radius: 8px; box-sizing: border-box; }
+        button { margin-top: 20px; width: 100%; padding: 12px 16px; background: #2563eb; color: white; border: none; border-radius: 8px; font-size: 16px; cursor: pointer; }
+        button:hover { background: #1d4ed8; }
+        .status { margin-top: 16px; padding: 12px; border-radius: 8px; background: #eef2ff; color: #1e3a8a; }
+        .error { background: #fee2e2; color: #991b1b; }
+    </style>
+</head>
+<body>
+<div class="app-shell">
+    <h1>Credit Application Form</h1>
+    <form id="credit-form">
+        <label for="name">Name</label>
+        <input id="name" name="name" type="text" maxlength="64" pattern="[A-Z][a-z]+(?: [A-Z][a-z]+){1,3}" placeholder="Ravi Kumar" title="Use 2 to 4 words with leading capitals, for example Ravi Kumar." required />
+
+        <label for="phone">Phone number</label>
+        <input id="phone" name="phone" type="tel" maxlength="10" pattern="[6-9][0-9]{9}" placeholder="9876543210" title="Use a 10-digit Indian mobile number starting with 6 to 9." required />
+
+        <label for="aadhar">Aadhar number</label>
+        <input id="aadhar" name="aadhar" type="text" maxlength="12" pattern="[2-9][0-9]{11}" placeholder="234567890123" title="Use a 12-digit Aadhaar number starting with 2 to 9." required />
+
+        <label for="pan">PAN card details</label>
+        <input id="pan" name="pan" type="text" maxlength="10" pattern="[A-Z]{5}[0-9]{4}[A-Z]" placeholder="ABCDE1234F" title="Use PAN format like ABCDE1234F." required />
+
+        <label for="creditCard">Credit card number</label>
+        <input id="creditCard" name="creditCard" type="text" maxlength="19" pattern="[0-9]{13,19}" placeholder="4111111111111111" title="Use 13 to 19 digits only." required />
+
+        <label for="expiry">Credit card expiry</label>
+        <input id="expiry" name="expiry" type="text" maxlength="7" pattern="(0[1-9]|1[0-2])/[0-9]{4}" placeholder="MM/YYYY" title="Use expiry in MM/YYYY format." required />
+
+        <label for="cvc">CVC</label>
+        <input id="cvc" name="cvc" type="text" maxlength="4" pattern="[0-9]{3,4}" required />
+
+        <button type="submit">Submit Application</button>
+    </form>
+    <div id="status" class="status" style="display:none"></div>
+</div>
+<script src="/app.js"></script>
+</body>
+</html>

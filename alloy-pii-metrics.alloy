@@ -1,0 +1,365 @@
+// Grafana Alloy pipeline for detector Envoy access-log based HTTP + PII metrics.
+// Run with:
+//   alloy run --server.http.listen-addr=0.0.0.0:12345 alloy-pii-metrics.alloy
+// Metrics will be exposed at:
+//   http://localhost:12345/metrics
+//
+// To remote-write these metrics to Grafana Cloud, set:
+//   GRAFANA_CLOUD_PROMETHEUS_REMOTE_WRITE_URL
+//   GRAFANA_CLOUD_PROMETHEUS_USERNAME
+//   GRAFANA_CLOUD_PROMETHEUS_PASSWORD
+
+loki.source.file "envoy_access" {
+  targets = [
+    {
+      __path__ = "logs/envoy-pii-detection.log",
+      job      = "envoy_pii_detection",
+    },
+  ]
+
+  tail_from_end = false
+  forward_to    = [loki.process.envoy_metrics.receiver]
+}
+
+loki.process "envoy_metrics" {
+  forward_to = [loki.echo.debug.receiver]
+
+  stage.json {
+    expressions = {
+      method                   = "method",
+      path                     = "path",
+      protocol                 = "protocol",
+      status                   = "response_code",
+      response_flags           = "response_flags",
+      upstream_host            = "upstream_host",
+      duration_ms              = "duration",
+      upstream_service_time_ms = "upstream_service_time",
+      bytes_received           = "bytes_received",
+      bytes_sent               = "bytes_sent",
+      request_pii_name_count                         = "request_pii_name_count",
+      request_pii_phone_count                        = "request_pii_phone_count",
+      request_pii_aadhaar_valid_count                = "request_pii_aadhaar_valid_count",
+      request_pii_aadhaar_suspicious_count           = "request_pii_aadhaar_suspicious_count",
+      request_pii_aadhaar_total_count                = "request_pii_aadhaar_total_count",
+      request_pii_pan_count                          = "request_pii_pan_count",
+      request_pii_credit_card_count                  = "request_pii_credit_card_count",
+      request_pii_credit_card_expiry_count           = "request_pii_credit_card_expiry_count",
+      request_pii_cvc_count                          = "request_pii_cvc_count",
+      request_pii_total_count                        = "request_pii_total_count",
+      response_pii_name_count                        = "response_pii_name_count",
+      response_pii_phone_count                       = "response_pii_phone_count",
+      response_pii_aadhaar_valid_count               = "response_pii_aadhaar_valid_count",
+      response_pii_aadhaar_suspicious_count          = "response_pii_aadhaar_suspicious_count",
+      response_pii_aadhaar_total_count               = "response_pii_aadhaar_total_count",
+      response_pii_pan_count                         = "response_pii_pan_count",
+      response_pii_credit_card_count                 = "response_pii_credit_card_count",
+      response_pii_credit_card_expiry_count          = "response_pii_credit_card_expiry_count",
+      response_pii_cvc_count                         = "response_pii_cvc_count",
+      response_pii_total_count                       = "response_pii_total_count",
+    }
+  }
+
+  // Alloy histograms accept duration strings and convert them to seconds.
+  stage.template {
+    source   = "duration_seconds_input"
+    template = `{{ if .duration_ms }}{{ .duration_ms }}ms{{ else }}0ms{{ end }}`
+  }
+
+  stage.template {
+    source   = "upstream_service_time_seconds_input"
+    template = `{{ if .upstream_service_time_ms }}{{ .upstream_service_time_ms }}ms{{ else }}0ms{{ end }}`
+  }
+
+  stage.template {
+    source   = "source_service"
+    template = `{{ if regexMatch "^/api/credit" .path }}ui-service{{ else if regexMatch "^/api/policy" .path }}input-service{{ else }}client{{ end }}`
+  }
+
+  stage.template {
+    source   = "dest_service"
+    template = `{{ if regexMatch "^/api/credit" .path }}input-service{{ else if regexMatch "^/api/policy" .path }}policy-service{{ else }}ui-service{{ end }}`
+  }
+
+  // PII counts are produced inside the detector Envoy Lua and exported as
+  // derived numeric fields only. Alloy never receives raw payload bodies.
+  stage.template {
+    source   = "request_pii_name_count"
+    template = `{{ if .request_pii_name_count }}{{ .request_pii_name_count }}{{ else }}0{{ end }}`
+  }
+
+  stage.template {
+    source   = "request_pii_phone_count"
+    template = `{{ if .request_pii_phone_count }}{{ .request_pii_phone_count }}{{ else }}0{{ end }}`
+  }
+
+  stage.template {
+    source   = "request_pii_aadhaar_total_count"
+    template = `{{ if .request_pii_aadhaar_total_count }}{{ .request_pii_aadhaar_total_count }}{{ else }}0{{ end }}`
+  }
+
+  stage.template {
+    source   = "request_pii_aadhaar_suspicious_count"
+    template = `{{ if .request_pii_aadhaar_suspicious_count }}{{ .request_pii_aadhaar_suspicious_count }}{{ else }}0{{ end }}`
+  }
+
+  stage.template {
+    source   = "request_pii_pan_count"
+    template = `{{ if .request_pii_pan_count }}{{ .request_pii_pan_count }}{{ else }}0{{ end }}`
+  }
+
+  stage.template {
+    source   = "request_pii_credit_card_count"
+    template = `{{ if .request_pii_credit_card_count }}{{ .request_pii_credit_card_count }}{{ else }}0{{ end }}`
+  }
+
+  stage.template {
+    source   = "request_pii_credit_card_expiry_count"
+    template = `{{ if .request_pii_credit_card_expiry_count }}{{ .request_pii_credit_card_expiry_count }}{{ else }}0{{ end }}`
+  }
+
+  stage.template {
+    source   = "request_pii_cvc_count"
+    template = `{{ if .request_pii_cvc_count }}{{ .request_pii_cvc_count }}{{ else }}0{{ end }}`
+  }
+
+  stage.template {
+    source   = "response_pii_total_count"
+    template = `{{ if .response_pii_total_count }}{{ .response_pii_total_count }}{{ else }}0{{ end }}`
+  }
+
+  // These labels become metric labels as well.
+  stage.labels {
+    values = {
+      method         = "",
+      path           = "",
+      protocol       = "",
+      status         = "",
+      response_flags = "",
+      upstream_host  = "",
+      source_service = "",
+      dest_service   = "",
+    }
+  }
+
+  stage.metrics {
+    metric.counter {
+      name              = "http_requests_total"
+      description       = "HTTP requests derived from Envoy access logs"
+      prefix            = ""
+      match_all         = true
+      action            = "inc"
+      max_idle_duration = "24h"
+    }
+  }
+
+  stage.metrics {
+    metric.counter {
+      name              = "http_response_flags_total"
+      description       = "HTTP response flags derived from Envoy access logs"
+      prefix            = ""
+      match_all         = true
+      action            = "inc"
+      max_idle_duration = "24h"
+    }
+  }
+
+  stage.metrics {
+    metric.histogram {
+      name              = "http_request_duration_seconds"
+      description       = "Request duration in seconds derived from Envoy access logs"
+      prefix            = ""
+      source            = "duration_seconds_input"
+      buckets           = [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0]
+      max_idle_duration = "24h"
+    }
+  }
+
+  stage.metrics {
+    metric.histogram {
+      name              = "http_upstream_service_time_seconds"
+      description       = "Upstream service time in seconds derived from Envoy access logs"
+      prefix            = ""
+      source            = "upstream_service_time_seconds_input"
+      buckets           = [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0]
+      max_idle_duration = "24h"
+    }
+  }
+
+  stage.metrics {
+    metric.histogram {
+      name              = "http_request_bytes_total"
+      description       = "Request bytes derived from Envoy access logs"
+      prefix            = ""
+      source            = "bytes_received"
+      buckets           = [0, 100, 500, 1000, 5000, 10000, 50000, 100000]
+      max_idle_duration = "24h"
+    }
+  }
+
+  stage.metrics {
+    metric.histogram {
+      name              = "http_response_bytes_total"
+      description       = "Response bytes derived from Envoy access logs"
+      prefix            = ""
+      source            = "bytes_sent"
+      buckets           = [0, 100, 500, 1000, 5000, 10000, 50000, 100000]
+      max_idle_duration = "24h"
+    }
+  }
+
+  stage.metrics {
+    metric.histogram {
+      name              = "http_request_body_size_bytes"
+      description       = "Request body size proxy using Envoy bytes_received"
+      prefix            = ""
+      source            = "bytes_received"
+      buckets           = [0, 100, 500, 1000, 5000, 10000, 50000, 100000]
+      max_idle_duration = "24h"
+    }
+  }
+
+  stage.metrics {
+    metric.histogram {
+      name              = "http_response_body_size_bytes"
+      description       = "Response body size proxy using Envoy bytes_sent"
+      prefix            = ""
+      source            = "bytes_sent"
+      buckets           = [0, 100, 500, 1000, 5000, 10000, 50000, 100000]
+      max_idle_duration = "24h"
+    }
+  }
+
+  stage.metrics {
+    metric.counter {
+      name              = "pii_name_transferred_total"
+      description       = "Name-like matches counted in Envoy request payloads"
+      prefix            = ""
+      source            = "request_pii_name_count"
+      action            = "add"
+      max_idle_duration = "24h"
+    }
+  }
+
+  stage.metrics {
+    metric.counter {
+      name              = "pii_phone_number_transferred_total"
+      description       = "Phone number matches counted in Envoy request payloads"
+      prefix            = ""
+      source            = "request_pii_phone_count"
+      action            = "add"
+      max_idle_duration = "24h"
+    }
+  }
+
+  stage.metrics {
+    metric.counter {
+      name              = "pii_aadhar_number_transferred_total"
+      description       = "Aadhaar-like matches counted in Envoy request payloads"
+      prefix            = ""
+      source            = "request_pii_aadhaar_total_count"
+      action            = "add"
+      max_idle_duration = "24h"
+    }
+  }
+
+  stage.metrics {
+    metric.counter {
+      name              = "pii_aadhar_suspicious_transferred_total"
+      description       = "Suspicious Aadhaar-length near matches counted in Envoy request payloads"
+      prefix            = ""
+      source            = "request_pii_aadhaar_suspicious_count"
+      action            = "add"
+      max_idle_duration = "24h"
+    }
+  }
+
+  stage.metrics {
+    metric.counter {
+      name              = "pii_pan_number_transferred_total"
+      description       = "PAN matches counted in Envoy request payloads"
+      prefix            = ""
+      source            = "request_pii_pan_count"
+      action            = "add"
+      max_idle_duration = "24h"
+    }
+  }
+
+  stage.metrics {
+    metric.counter {
+      name              = "pii_credit_card_number_transferred_total"
+      description       = "Luhn-valid credit card matches counted in Envoy request payloads"
+      prefix            = ""
+      source            = "request_pii_credit_card_count"
+      action            = "add"
+      max_idle_duration = "24h"
+    }
+  }
+
+  stage.metrics {
+    metric.counter {
+      name              = "pii_credit_card_expiry_transferred_total"
+      description       = "Credit card expiry matches counted in Envoy request payloads"
+      prefix            = ""
+      source            = "request_pii_credit_card_expiry_count"
+      action            = "add"
+      max_idle_duration = "24h"
+    }
+  }
+
+  stage.metrics {
+    metric.counter {
+      name              = "pii_cvc_transferred_total"
+      description       = "CVC-like matches counted in Envoy request payloads when card context is present"
+      prefix            = ""
+      source            = "request_pii_cvc_count"
+      action            = "add"
+      max_idle_duration = "24h"
+    }
+  }
+
+  stage.metrics {
+    metric.counter {
+      name              = "pii_response_payload_matches_total"
+      description       = "All PII-like matches counted in Envoy response payloads"
+      prefix            = ""
+      source            = "response_pii_total_count"
+      action            = "add"
+      max_idle_duration = "24h"
+    }
+  }
+}
+
+// This keeps the config self-contained. Replace with loki.write if you also
+// want to ship the processed logs somewhere.
+loki.echo "debug" {}
+
+prometheus.exporter.self "alloy" {}
+prometheus.scrape "alloy_metrics" {
+  targets    = prometheus.exporter.self.alloy.targets
+  forward_to = [prometheus.relabel.grafana_cloud_metrics.receiver]
+}
+
+// loki.process stage metrics are exposed locally with a
+// loki_process_custom_ prefix. Remove it before remote write so Grafana queries
+// can use stable application-facing metric names.
+prometheus.relabel "grafana_cloud_metrics" {
+  forward_to = [prometheus.remote_write.grafana_cloud.receiver]
+
+  rule {
+    source_labels = ["__name__"]
+    regex         = "loki_process_custom_(.*)"
+    target_label  = "__name__"
+    replacement   = "$1"
+  }
+}
+
+prometheus.remote_write "grafana_cloud" {
+  endpoint {
+    url = env("GRAFANA_CLOUD_PROMETHEUS_REMOTE_WRITE_URL")
+
+    basic_auth {
+      username = env("GRAFANA_CLOUD_PROMETHEUS_USERNAME")
+      password = env("GRAFANA_CLOUD_PROMETHEUS_PASSWORD")
+    }
+  }
+}

@@ -1,0 +1,310 @@
+admin:
+  address:
+    socket_address:
+      address: "::1"
+      port_value: 9902
+
+static_resources:
+  listeners:
+  - name: kafka_event_detector
+    address:
+      socket_address:
+        protocol: TCP
+        address: "::"
+        port_value: 8091
+    filter_chains:
+    - filters:
+      - name: envoy.filters.network.http_connection_manager
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+          codec_type: AUTO
+          stat_prefix: kafka_event_detector
+          route_config:
+            name: detector_route
+            virtual_hosts:
+            - name: detector
+              domains: ["*"]
+              routes:
+              - match:
+                  prefix: "/detect"
+                direct_response:
+                  status: 204
+          http_filters:
+          - name: envoy.filters.http.lua
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.lua.v3.Lua
+              inline_code: |
+                local MAX_SCAN_BYTES = 65536
+
+                local function body_string(handle)
+                  local body = handle:body(true)
+                  if not body or body:length() == 0 then
+                    return ""
+                  end
+                  return string.sub(body:getBytes(0, body:length()), 1, MAX_SCAN_BYTES)
+                end
+
+                local function json_unescape(value)
+                  if value == nil then
+                    return ""
+                  end
+                  value = string.gsub(value, "\\n", "\n")
+                  value = string.gsub(value, "\\r", "\r")
+                  value = string.gsub(value, "\\t", "\t")
+                  value = string.gsub(value, "\\\"", "\"")
+                  value = string.gsub(value, "\\\\", "\\")
+                  return value
+                end
+
+                local function json_value(payload, key)
+                  local marker = "\"" .. key .. "\""
+                  local marker_start = string.find(payload, marker, 1, true)
+                  if not marker_start then
+                    return ""
+                  end
+
+                  local colon = string.find(payload, ":", marker_start + string.len(marker), true)
+                  if not colon then
+                    return ""
+                  end
+
+                  local quote = string.find(payload, "\"", colon + 1, true)
+                  if not quote then
+                    return ""
+                  end
+
+                  local chars = {}
+                  local escaped = false
+                  for i = quote + 1, string.len(payload) do
+                    local char = string.sub(payload, i, i)
+                    if escaped then
+                      table.insert(chars, "\\" .. char)
+                      escaped = false
+                    elseif char == "\\" then
+                      escaped = true
+                    elseif char == "\"" then
+                      return json_unescape(table.concat(chars))
+                    else
+                      table.insert(chars, char)
+                    end
+                  end
+
+                  return ""
+                end
+
+                local function count_pattern(value, pattern)
+                  local count = 0
+                  for _ in string.gmatch(value, pattern) do
+                    count = count + 1
+                  end
+                  return count
+                end
+
+                local function digits_only(value)
+                  return string.gsub(value, "%D", "")
+                end
+
+                local function luhn_valid(value)
+                  local digits = digits_only(value)
+                  local sum = 0
+                  local double_digit = false
+
+                  for i = string.len(digits), 1, -1 do
+                    local digit = tonumber(string.sub(digits, i, i))
+                    if double_digit then
+                      digit = digit * 2
+                      if digit > 9 then
+                        digit = digit - 9
+                      end
+                    end
+                    sum = sum + digit
+                    double_digit = not double_digit
+                  end
+
+                  return string.len(digits) >= 13 and string.len(digits) <= 19 and sum % 10 == 0
+                end
+
+                local function count_luhn_cards(value)
+                  local count = 0
+                  for candidate in string.gmatch(value, "%f[%d]%d[%d%s%-]+%d%f[%D]") do
+                    if luhn_valid(candidate) then
+                      count = count + 1
+                    end
+                  end
+                  return count
+                end
+
+                local function count_aadhaar(value)
+                  local valid = 0
+                  local suspicious = 0
+
+                  for candidate in string.gmatch(value, "%f[%d][2-9][%d%s%-]+%d%f[%D]") do
+                    local digits = digits_only(candidate)
+                    local length = string.len(digits)
+                    if length == 12 then
+                      valid = valid + 1
+                    elseif length >= 11 and length <= 14 then
+                      suspicious = suspicious + 1
+                    end
+                  end
+
+                  return valid, suspicious
+                end
+
+                local function scan_pii(body)
+                  local scan_body = ""
+                  if body then
+                    scan_body = string.sub(tostring(body), 1, MAX_SCAN_BYTES)
+                  end
+
+                  local upper_body = string.upper(scan_body)
+                  local aadhaar_valid_count, aadhaar_suspicious_count = count_aadhaar(scan_body)
+                  local credit_card_count = count_luhn_cards(scan_body)
+
+                  local counts = {
+                    name_count = count_pattern(scan_body, "%f[%a]%u%l+%s+%u%l+[%a%s]*%f[%A]"),
+                    phone_count = count_pattern(scan_body, "%f[%d][6-9]%d%d%d%d%d%d%d%d%d%f[%D]"),
+                    aadhaar_valid_count = aadhaar_valid_count,
+                    aadhaar_suspicious_count = aadhaar_suspicious_count,
+                    pan_count = count_pattern(upper_body, "%f[%w]%u%u%u%u%u%d%d%d%d%u%f[%W]"),
+                    credit_card_count = credit_card_count,
+                    credit_card_expiry_count = count_pattern(scan_body, "%f[%d](0[1-9]%/20%d%d)%f[%D]") + count_pattern(scan_body, "%f[%d](1[0-2]%/20%d%d)%f[%D]"),
+                    cvc_count = 0,
+                  }
+
+                  if credit_card_count > 0 and counts.credit_card_expiry_count > 0 then
+                    counts.cvc_count = count_pattern(scan_body, "[\"']%d%d%d%d?[\"']")
+                  end
+
+                  counts.aadhaar_total_count = counts.aadhaar_valid_count + counts.aadhaar_suspicious_count
+                  counts.total_count = counts.name_count + counts.phone_count + counts.aadhaar_total_count + counts.pan_count + counts.credit_card_count + counts.credit_card_expiry_count + counts.cvc_count
+                  return counts
+                end
+
+                local function zero_counts()
+                  return {
+                    name_count = 0,
+                    phone_count = 0,
+                    aadhaar_valid_count = 0,
+                    aadhaar_suspicious_count = 0,
+                    aadhaar_total_count = 0,
+                    pan_count = 0,
+                    credit_card_count = 0,
+                    credit_card_expiry_count = 0,
+                    cvc_count = 0,
+                    total_count = 0,
+                  }
+                end
+
+                local function set_counts(handle, prefix, counts)
+                  local metadata = handle:streamInfo():dynamicMetadata()
+                  metadata:set("detector.event", prefix .. "_pii_name_count", counts.name_count)
+                  metadata:set("detector.event", prefix .. "_pii_phone_count", counts.phone_count)
+                  metadata:set("detector.event", prefix .. "_pii_aadhaar_valid_count", counts.aadhaar_valid_count)
+                  metadata:set("detector.event", prefix .. "_pii_aadhaar_suspicious_count", counts.aadhaar_suspicious_count)
+                  metadata:set("detector.event", prefix .. "_pii_aadhaar_total_count", counts.aadhaar_total_count)
+                  metadata:set("detector.event", prefix .. "_pii_pan_count", counts.pan_count)
+                  metadata:set("detector.event", prefix .. "_pii_credit_card_count", counts.credit_card_count)
+                  metadata:set("detector.event", prefix .. "_pii_credit_card_expiry_count", counts.credit_card_expiry_count)
+                  metadata:set("detector.event", prefix .. "_pii_cvc_count", counts.cvc_count)
+                  metadata:set("detector.event", prefix .. "_pii_total_count", counts.total_count)
+                end
+
+                local function set_event_metadata(handle, event_payload)
+                  local metadata = handle:streamInfo():dynamicMetadata()
+                  metadata:set("detector.event", "start_time", json_value(event_payload, "start_time"))
+                  metadata:set("detector.event", "method", json_value(event_payload, "method"))
+                  metadata:set("detector.event", "path", json_value(event_payload, "path"))
+                  metadata:set("detector.event", "protocol", json_value(event_payload, "protocol"))
+                  metadata:set("detector.event", "response_code", json_value(event_payload, "response_code"))
+                  metadata:set("detector.event", "bytes_received", json_value(event_payload, "bytes_received"))
+                  metadata:set("detector.event", "bytes_sent", json_value(event_payload, "bytes_sent"))
+                  metadata:set("detector.event", "duration", json_value(event_payload, "duration"))
+                  metadata:set("detector.event", "upstream_service_time", json_value(event_payload, "upstream_service_time"))
+                  metadata:set("detector.event", "forwarded_for", json_value(event_payload, "forwarded_for"))
+                  metadata:set("detector.event", "user_agent", json_value(event_payload, "user_agent"))
+                  metadata:set("detector.event", "request_id", json_value(event_payload, "request_id"))
+                  metadata:set("detector.event", "authority", json_value(event_payload, "authority"))
+                  metadata:set("detector.event", "upstream_host", json_value(event_payload, "upstream_host"))
+                  metadata:set("detector.event", "route_hop", json_value(event_payload, "route_hop"))
+                  metadata:set("detector.event", "direction", json_value(event_payload, "direction"))
+                end
+
+                function envoy_on_request(request_handle)
+                  local event_payload = body_string(request_handle)
+                  local direction = json_value(event_payload, "direction")
+                  local event_body = json_value(event_payload, "body")
+
+                  if direction == "" and event_body == "" then
+                    event_body = json_value(event_payload, "request_body")
+                    if event_body ~= "" then
+                      direction = "request"
+                    else
+                      event_body = json_value(event_payload, "response_body")
+                      if event_body ~= "" then
+                        direction = "response"
+                      end
+                    end
+                  end
+
+                  local detected = scan_pii(event_body)
+                  local zeros = zero_counts()
+
+                  set_event_metadata(request_handle, event_payload)
+
+                  if direction == "response" then
+                    set_counts(request_handle, "request", zeros)
+                    set_counts(request_handle, "response", detected)
+                  else
+                    set_counts(request_handle, "request", detected)
+                    set_counts(request_handle, "response", zeros)
+                  end
+                end
+          - name: envoy.filters.http.router
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+          access_log:
+          - name: envoy.access_loggers.file
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.access_loggers.file.v3.FileAccessLog
+              path: logs/envoy-pii-detection.log
+              log_format:
+                json_format:
+                  start_time: "%DYNAMIC_METADATA(detector.event:start_time)%"
+                  detector_start_time: "%START_TIME%"
+                  method: "%DYNAMIC_METADATA(detector.event:method)%"
+                  path: "%DYNAMIC_METADATA(detector.event:path)%"
+                  protocol: "%DYNAMIC_METADATA(detector.event:protocol)%"
+                  response_code: "%DYNAMIC_METADATA(detector.event:response_code)%"
+                  response_flags: "%RESPONSE_FLAGS%"
+                  bytes_received: "%DYNAMIC_METADATA(detector.event:bytes_received)%"
+                  bytes_sent: "%DYNAMIC_METADATA(detector.event:bytes_sent)%"
+                  duration: "%DYNAMIC_METADATA(detector.event:duration)%"
+                  upstream_service_time: "%DYNAMIC_METADATA(detector.event:upstream_service_time)%"
+                  forwarded_for: "%DYNAMIC_METADATA(detector.event:forwarded_for)%"
+                  user_agent: "%DYNAMIC_METADATA(detector.event:user_agent)%"
+                  request_id: "%DYNAMIC_METADATA(detector.event:request_id)%"
+                  authority: "%DYNAMIC_METADATA(detector.event:authority)%"
+                  upstream_host: "%DYNAMIC_METADATA(detector.event:upstream_host)%"
+                  route_hop: "%DYNAMIC_METADATA(detector.event:route_hop)%"
+                  observed_direction: "%DYNAMIC_METADATA(detector.event:direction)%"
+                  request_pii_name_count: "%DYNAMIC_METADATA(detector.event:request_pii_name_count)%"
+                  request_pii_phone_count: "%DYNAMIC_METADATA(detector.event:request_pii_phone_count)%"
+                  request_pii_aadhaar_valid_count: "%DYNAMIC_METADATA(detector.event:request_pii_aadhaar_valid_count)%"
+                  request_pii_aadhaar_suspicious_count: "%DYNAMIC_METADATA(detector.event:request_pii_aadhaar_suspicious_count)%"
+                  request_pii_aadhaar_total_count: "%DYNAMIC_METADATA(detector.event:request_pii_aadhaar_total_count)%"
+                  request_pii_pan_count: "%DYNAMIC_METADATA(detector.event:request_pii_pan_count)%"
+                  request_pii_credit_card_count: "%DYNAMIC_METADATA(detector.event:request_pii_credit_card_count)%"
+                  request_pii_credit_card_expiry_count: "%DYNAMIC_METADATA(detector.event:request_pii_credit_card_expiry_count)%"
+                  request_pii_cvc_count: "%DYNAMIC_METADATA(detector.event:request_pii_cvc_count)%"
+                  request_pii_total_count: "%DYNAMIC_METADATA(detector.event:request_pii_total_count)%"
+                  response_pii_name_count: "%DYNAMIC_METADATA(detector.event:response_pii_name_count)%"
+                  response_pii_phone_count: "%DYNAMIC_METADATA(detector.event:response_pii_phone_count)%"
+                  response_pii_aadhaar_valid_count: "%DYNAMIC_METADATA(detector.event:response_pii_aadhaar_valid_count)%"
+                  response_pii_aadhaar_suspicious_count: "%DYNAMIC_METADATA(detector.event:response_pii_aadhaar_suspicious_count)%"
+                  response_pii_aadhaar_total_count: "%DYNAMIC_METADATA(detector.event:response_pii_aadhaar_total_count)%"
+                  response_pii_pan_count: "%DYNAMIC_METADATA(detector.event:response_pii_pan_count)%"
+                  response_pii_credit_card_count: "%DYNAMIC_METADATA(detector.event:response_pii_credit_card_count)%"
+                  response_pii_credit_card_expiry_count: "%DYNAMIC_METADATA(detector.event:response_pii_credit_card_expiry_count)%"
+                  response_pii_cvc_count: "%DYNAMIC_METADATA(detector.event:response_pii_cvc_count)%"
+                  response_pii_total_count: "%DYNAMIC_METADATA(detector.event:response_pii_total_count)%"

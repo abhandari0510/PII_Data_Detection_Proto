@@ -1,0 +1,13 @@
+server:
+  port: 8085
+app:
+  credit-input-apply-url: ${CREDIT_INPUT_APPLY_URL:/api/credit/apply}
+  credit-input-upstream-apply-url: ${CREDIT_INPUT_UPSTREAM_APPLY_URL:http://[::1]:8089/api/credit/apply}
+spring:
+  mvc:
+    static-path-pattern: "/**"
+logging:
+  file:
+    path: logs
+  level:
+    root: INFO

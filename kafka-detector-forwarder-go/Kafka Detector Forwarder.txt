@@ -1,0 +1,35 @@
+# Kafka Detector Forwarder - Run
+
+# Terminal 1: Start detector test server
+cd kafka-detector-forwarder-go
+GOCACHE="$PWD/.gocache" GOMODCACHE="$PWD/.gomodcache" go mod tidy
+./start-detector-test-server.sh
+
+
+# Terminal 2: Start Kafka and Go forwarder
+cd kafka-detector-forwarder-go
+./start-redpanda-kafka.sh
+./run.sh
+tail -f logs/kafka-detector-forwarder.shell.log
+
+
+# Terminal 3: Send test Kafka message
+cd kafka-detector-forwarder-go
+./produce-test-message.sh '{"message":"local test","user":"tarun"}'
+
+
+# Expected detector output:
+# POST /detect
+# {"message":"local test","user":"tarun"}
+
+# Expected forwarder log:
+# Forwarded Kafka record
+
+
+# Stop commands
+cd kafka-detector-forwarder-go
+./stop.sh
+./stop-redpanda-kafka.sh
+
+# Stop detector test server:
+# Press Ctrl + C in Terminal 1
