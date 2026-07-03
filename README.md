@@ -21,7 +21,7 @@ local files. Traffic body-event logs are published directly to Kafka.
 - traffic Envoy from `credit-ui` to `credit-input`: http://localhost:8089
 - traffic Envoy from `credit-input` to `policy-generator`: http://localhost:8090
 - detector Envoy: http://localhost:8091/detect
-- Kafka REST Proxy for Envoy publishing: http://localhost:18082
+- Kafka Strimzi Bridge for Envoy publishing: http://localhost:18082
 
 ## Prerequisites
 
@@ -29,7 +29,7 @@ local files. Traffic body-event logs are published directly to Kafka.
 - Maven, available as `mvn`.
 - Go 1.23 or newer for `kafka-detector-forwarder-go`.
 - Apache Kafka 4.2 from the Apache quickstart, for the broker and Kafka CLI tools.
-- Confluent Platform ZIP/TAR install, for Kafka REST Proxy.
+- Kafka Strimzi Bridge package, for Envoy publishing.
 - The checked-in Envoy binary, or set `ENVOY_BIN` before running `start-envoys.sh`.
 - Grafana Alloy only if you want to turn detector logs into metrics.
 
@@ -106,18 +106,20 @@ With this setup:
 - `credit-input` -> traffic Envoy -> `policy-generator`
 
 The traffic Envoy does not write request/response body events to a local file.
-It publishes body-event records directly to Kafka through Kafka REST Proxy.
+It publishes body-event records directly to Kafka through Kafka Strimzi Bridge.
 
 ## Kafka Body Event Pipeline
 
+![PII Data Detection Platform Architecture](docs/images/pii-data-detection-platform-architecture.png)
+
 The traffic Envoy publishes request/response body-event records directly to
-Kafka through Confluent Kafka REST Proxy. The local `kafka-detector-forwarder-go`
+Kafka through Kafka Strimzi Bridge. The local `kafka-detector-forwarder-go`
 then consumes those Kafka records and sends each record value to the detector
 Envoy, which performs the in-memory PII detection and writes the derived
 counter log consumed by Alloy.
 
 ```text
-traffic Envoy -> Kafka REST Proxy -> Kafka topic -> kafka-detector-forwarder-go -> detector Envoy -> logs/envoy-pii-detection.log -> Alloy
+traffic Envoy -> Kafka Strimzi Bridge -> Kafka topic -> kafka-detector-forwarder-go -> detector Envoy -> logs/envoy-pii-detection.log -> Alloy
 ```
 
 ### 1. Start Kafka
@@ -127,10 +129,10 @@ an existing cluster. The examples below assume:
 
 - Kafka bootstrap server: `localhost:9092`
 - Kafka topic: `envoy-body-events`
-- Kafka REST Proxy: `http://[::1]:18082`
+- Kafka Strimzi Bridge: `http://[::1]:18082`
 
 The traffic Envoy config has a `kafka-rest-proxy` cluster pointing at
-`[::1]:18082`. If your REST Proxy listens elsewhere, update the
+`[::1]:18082`. If your Strimzi Bridge listens elsewhere, update the
 `kafka-rest-proxy` cluster in `envoy.yaml`.
 
 The topic name is set in two places:
@@ -186,27 +188,41 @@ kafka-topics.sh \
   --topic "$KAFKA_TOPIC"
 ```
 
-### 3. Start Kafka REST Proxy
+### 3. Start Kafka Strimzi Bridge
 
-Start Kafka REST Proxy so Envoy can publish records to the topic. Configure it
-to listen on `18082` to avoid this app's service ports:
+Download and unpack Kafka Strimzi Bridge under `/mnt/kafka_files`:
 
 ```bash
-kafka-rest-start /path/to/kafka-rest.properties
+cd /mnt/kafka_files
+wget https://github.com/strimzi/strimzi-kafka-bridge/releases/download/1.0.0/kafka-bridge-1.0.0.tar.gz
+tar -xvf kafka-bridge-1.0.0.tar.gz
 ```
 
-If you installed Confluent Platform from ZIP/TAR, create a small properties file
-such as `/tmp/kafka-rest-envoy.properties`:
+Move to the bridge config directory:
+
+```bash
+cd kafka-bridge-1.0.0/config
+```
+
+Edit `application.properties` and update the HTTP ports:
 
 ```properties
-bootstrap.servers=PLAINTEXT://localhost:9092
-listeners=http://[::1]:18082
+http.port=18082
+http.management.port=8080
 ```
 
-Then start REST Proxy from your Confluent install:
+These replace the default values:
+
+```properties
+http.port=8080
+http.management.port=8081
+```
+
+Then go back to the bridge directory and start Kafka Strimzi Bridge:
 
 ```bash
-/path/to/confluent/bin/kafka-rest-start /tmp/kafka-rest-envoy.properties
+cd ..
+bin/kafka_bridge_run.sh --config-file config/application.properties
 ```
 
 The traffic Envoy publishes to:
@@ -220,7 +236,7 @@ Each HTTP exchange produces two Kafka records:
 - `direction=request`, containing the request body
 - `direction=response`, containing the response body
 
-Verify REST Proxy can see Kafka:
+Verify Strimzi Bridge can see Kafka:
 
 ```bash
 curl -i -sS http://[::1]:18082/topics
@@ -379,12 +395,12 @@ http://localhost:12345/metrics
 Use this order for a clean local run:
 
 ```text
-Kafka -> Kafka REST Proxy -> mvn package -> ./start-all.sh -> ./start-envoys.sh -> ./start-detector-forwarder.sh -> Alloy
+Kafka -> Kafka Strimzi Bridge -> mvn package -> ./start-all.sh -> ./start-envoys.sh -> ./start-detector-forwarder.sh -> Alloy
 ```
 
 ## Troubleshooting
 
-If Envoy is not publishing to Kafka REST Proxy, check REST Proxy first:
+If Envoy is not publishing to Kafka Strimzi Bridge, check Strimzi Bridge first:
 
 ```bash
 curl -i -sS http://[::1]:18082/topics
@@ -428,7 +444,7 @@ Connect for the detector pipeline.
 
 - The policy generator returns the same application number for the same input payload.
 - Each service logs transaction details locally.
-- Traffic Envoy timestamps request/response body events and publishes them directly to Kafka through Kafka REST Proxy.
+- Traffic Envoy timestamps request/response body events and publishes them directly to Kafka through Kafka Strimzi Bridge.
 - Detector Envoy preserves each event's `start_time`, records `detector_start_time`, converts PII-like strings into numeric counters, and writes only timestamped derived counts to `logs/envoy-pii-detection.log`.
 - Alloy scrapes only the detector Envoy counter log. Raw request and response payload bodies are not read by Alloy or the OpenTelemetry Collector.
 - PII metrics count sensitive-looking strings by route/service flow. Aadhaar detection includes valid 12-digit matches plus suspicious 11-14 digit near matches; credit card detection uses Luhn validation.
