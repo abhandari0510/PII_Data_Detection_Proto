@@ -1,7 +1,7 @@
 admin:
   address:
     socket_address:
-      address: "::1"
+      address: "0.0.0.0"
       port_value: 9901
 
 static_resources:
@@ -10,7 +10,7 @@ static_resources:
     address:
       socket_address:
         protocol: TCP
-        address: "::"
+        address: "0.0.0.0"
         port_value: 8089
     filter_chains:
     - filters:
@@ -51,8 +51,8 @@ static_resources:
               inline_code: |
                 local MAX_CAPTURE_BYTES = 65536
                 local KAFKA_TOPIC = "envoy-body-events"
-                local KAFKA_REST_CLUSTER = "kafka-rest-proxy"
-                local KAFKA_REST_AUTHORITY = "kafka-rest-proxy"
+                local KAFKA_REST_CLUSTER = "strimzi-kafka-bridge"
+                local KAFKA_REST_AUTHORITY = "strimzi-kafka-bridge"
                 local METADATA_NAMESPACE = "envoy.filters.http.lua"
                 local METADATA_KEY = "kafka_event"
 
@@ -219,7 +219,7 @@ static_resources:
     address:
       socket_address:
         protocol: TCP
-        address: "::"
+        address: "0.0.0.0"
         port_value: 8090
     filter_chains:
     - filters:
@@ -259,7 +259,7 @@ static_resources:
         - endpoint:
             address:
               socket_address:
-                address: "::1"
+                address: "0.0.0.0"
                 port_value: 8081
   - name: policy-service
     connect_timeout: 0.25s
@@ -272,18 +272,18 @@ static_resources:
         - endpoint:
             address:
               socket_address:
-                address: "::1"
+                address: "0.0.0.0"
                 port_value: 8082
-  - name: kafka-rest-proxy
+  - name: strimzi-kafka-bridge
     connect_timeout: 0.25s
     type: STATIC
     lb_policy: ROUND_ROBIN
     load_assignment:
-      cluster_name: kafka-rest-proxy
+      cluster_name: strimzi-kafka-bridge
       endpoints:
       - lb_endpoints:
         - endpoint:
             address:
               socket_address:
-                address: "::1"
+                address: "0.0.0.0"
                 port_value: 18082

@@ -1,0 +1,122 @@
+version: "3.9"
+
+services:
+  traffic-envoy:
+    image: envoyproxy/envoy:v1.38-latest
+    container_name: traffic-envoy
+    hostname: traffic-envoy
+    restart: unless-stopped
+
+    ports:
+      - "8089:8089"
+      - "8090:8090"
+      - "9901:9901"
+
+    volumes:
+      - ./envoy.yaml:/etc/envoy/envoy.yaml:ro
+
+    command:
+      - envoy
+      - -c
+      - /etc/envoy/envoy.yaml
+      - --log-level
+      - info
+
+    depends_on:
+      - kafka-bridge
+
+    networks:
+      - pii-network
+
+  kafka:
+    image: apache/kafka:4.2.0
+    container_name: kafka
+    hostname: kafka
+    restart: unless-stopped
+
+    ports:
+      - "9092:9092"
+
+    environment:
+      CLUSTER_ID: WN2DvW8XQy-FESWfcaIHPQ
+
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+
+      KAFKA_DEFAULT_REPLICATION_FACTOR: 1
+      KAFKA_NUM_PARTITIONS: 1
+
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+
+    networks:
+      - pii-network
+
+  kafka-bridge:
+    image: quay.io/strimzi/kafka-bridge:latest
+    container_name: kafka-bridge
+    hostname: kafka-bridge
+    restart: unless-stopped
+
+    depends_on:
+      - kafka
+
+    ports:
+      - "18082:18082"
+      - "18083:8081"
+
+    volumes:
+      - ./strimzi-bridge/application.properties:/opt/strimzi/custom.properties:ro
+
+    command:
+      - /opt/strimzi/bin/kafka_bridge_run.sh
+      - --config-file=/opt/strimzi/custom.properties
+
+    networks:
+      - pii-network
+
+  pii-detector-envoy:
+    image: envoyproxy/envoy:v1.38-latest
+    container_name: pii-detector-envoy
+    hostname: pii-detector-envoy
+    restart: unless-stopped
+
+    ports:
+      - "8091:8091"
+      - "9902:9902"
+
+    volumes:
+      - ./envoy-pii-detector.yaml:/etc/envoy/envoy.yaml:ro
+      - ./logs:/etc/envoy/logs
+
+    command:
+      - envoy
+      - -c
+      - /etc/envoy/envoy.yaml
+      - --log-level
+      - info
+
+    networks:
+      - pii-network
+
+volumes:
+  kafka-data:
+
+networks:
+  pii-network:
+    driver: bridge
