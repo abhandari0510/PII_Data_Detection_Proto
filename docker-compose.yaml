@@ -1,11 +1,11 @@
-version: "3.9"
-
 services:
   traffic-envoy:
     image: envoyproxy/envoy:v1.38-latest
     container_name: traffic-envoy
     hostname: traffic-envoy
     restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
     ports:
       - "8089:8089"
@@ -95,6 +95,7 @@ services:
     container_name: pii-detector-envoy
     hostname: pii-detector-envoy
     restart: unless-stopped
+    user: "0:0"
 
     ports:
       - "8091:8091"
@@ -105,11 +106,29 @@ services:
       - ./logs:/etc/envoy/logs
 
     command:
-      - envoy
+      - /bin/sh
       - -c
-      - /etc/envoy/envoy.yaml
-      - --log-level
-      - info
+      - touch /etc/envoy/logs/envoy-pii-detection.log && chmod 666 /etc/envoy/logs/envoy-pii-detection.log 2>/dev/null || true; exec envoy -c /etc/envoy/envoy.yaml --log-level info
+
+    networks:
+      - pii-network
+
+  kafka-detector-forwarder:
+    build:
+      context: ./kafka-detector-forwarder-go
+    container_name: kafka-detector-forwarder
+    hostname: kafka-detector-forwarder
+    restart: unless-stopped
+
+    depends_on:
+      - kafka
+      - pii-detector-envoy
+
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_TOPIC: envoy-body-events
+      KAFKA_DETECTOR_GROUP_ID: envoy-body-events-detector-forwarder
+      DETECTOR_ENVOY_URL: http://pii-detector-envoy:8091/detect
 
     networks:
       - pii-network
